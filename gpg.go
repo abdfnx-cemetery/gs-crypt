@@ -3,6 +3,7 @@ package gscrypt
 import (
 	"fmt"
 	"os/exec"
+	"io/ioutil"
 )
 
 type GPGVersion int
@@ -86,4 +87,72 @@ func newGPGClient(version *GPGVersion, homedir string) (GPGClient, error) {
 		default:
 			return nil, fmt.Errorf("unhandled case: NewGPGClient")
 	}
+}
+
+func (gc *gpgv2Client) GetGPGPrivateKey(keyid uint64, passphrase string) ([]byte, error) {
+	var args []string
+
+	if gc.gpgHomeDir != "" {
+		args = append(args, []string{"--homedir", gc.gpgHomeDir}...)
+	}
+
+	rfile, wfile, err := os.Pipe()
+	if err != nil {
+		return nil, errors.Wrapf(err, "could not create pipe")
+	}
+	defer func() {
+		rfile.Close()
+		wfile.Close()
+	}()
+	// fill pipe in background
+	go func(passphrase string) {
+		_, _ = wfile.Write([]byte(passphrase))
+		wfile.Close()
+	}(passphrase)
+
+	args = append(args, []string{"--pinentry-mode", "loopback", "--batch", "--passphrase-fd", fmt.Sprintf("%d", 3), "--export-secret-key", fmt.Sprintf("0x%x", keyid)}...)
+
+	cmd := exec.Command("gpg2", args...)
+	cmd.ExtraFiles = []*os.File{rfile}
+
+	return runGPGGetOutput(cmd)
+}
+
+// ReadGPGPubRingFile reads the GPG public key ring file
+func (gc *gpgv2Client) ReadGPGPubRingFile() ([]byte, error) {
+	var args []string
+
+	if gc.gpgHomeDir != "" {
+		args = append(args, []string{"--homedir", gc.gpgHomeDir}...)
+	}
+	args = append(args, []string{"--batch", "--export"}...)
+
+	cmd := exec.Command("gpg2", args...)
+
+	return runGPGGetOutput(cmd)
+}
+
+func runGPGGetOutput(cmd *exec.Cmd) ([]byte, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	stdoutstr, err2 := ioutil.ReadAll(stdout)
+	stderrstr, _ := ioutil.ReadAll(stderr)
+
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("error from %s: %s", cmd.Path, string(stderrstr))
+	}
+
+	return stdoutstr, err2
 }
