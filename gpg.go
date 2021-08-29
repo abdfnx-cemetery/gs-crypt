@@ -1,5 +1,7 @@
 package gscrypt
 
+import "os/exec"
+
 type GPGVersion int
 
 const (
@@ -28,4 +30,14 @@ type gpgv2Client struct {
 // gpgv1Client is a gpg client
 type gpgv1Client struct {
 	gpgClient
+}
+
+func GuessGPGVersion() GPGVersion {
+	if err := exec.Command("gpg2", "--version").Run(); err == nil {
+		return GPGv2
+	} else if err := exec.Command("gpg", "--version").Run(); err == nil {
+		return GPGv1
+	} else {
+		return GPGVersionUndetermined
+	}
 }
