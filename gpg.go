@@ -2,8 +2,10 @@ package gscrypt
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"io/ioutil"
+	"github.com/pkg/errors"
 )
 
 type GPGVersion int
@@ -100,6 +102,7 @@ func (gc *gpgv2Client) GetGPGPrivateKey(keyid uint64, passphrase string) ([]byte
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not create pipe")
 	}
+
 	defer func() {
 		rfile.Close()
 		wfile.Close()
@@ -125,6 +128,7 @@ func (gc *gpgv2Client) ReadGPGPubRingFile() ([]byte, error) {
 	if gc.gpgHomeDir != "" {
 		args = append(args, []string{"--homedir", gc.gpgHomeDir}...)
 	}
+
 	args = append(args, []string{"--batch", "--export"}...)
 
 	cmd := exec.Command("gpg2", args...)
@@ -155,4 +159,29 @@ func runGPGGetOutput(cmd *exec.Cmd) ([]byte, error) {
 	}
 
 	return stdoutstr, err2
+}
+
+func (gc *gpgv2Client) getKeyDetails(option string, keyid uint64) ([]byte, bool, error) {
+	var args []string
+
+	if gc.gpgHomeDir != "" {
+		args = []string{"--homedir", gc.gpgHomeDir}
+	}
+
+	args = append(args, option, fmt.Sprintf("0x%x", keyid))
+
+	cmd := exec.Command("gpg2", args...)
+
+	keydata, err := runGPGGetOutput(cmd)
+	return keydata, err == nil, err
+}
+
+func (gc *gpgv2Client) GetSecretKeyDetails(keyid uint64) ([]byte, bool, error) {
+	return gc.getKeyDetails("-K", keyid)
+}
+
+// GetKeyDetails retrieves the public key details of key with keyid.
+// returns a byte array of the details and a bool if the key exists
+func (gc *gpgv2Client) GetKeyDetails(keyid uint64) ([]byte, bool, error) {
+	return gc.getKeyDetails("-k", keyid)
 }
