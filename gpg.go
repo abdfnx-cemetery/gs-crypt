@@ -15,3 +15,17 @@ type GPGClient interface {
 	GetKeyDetails(keyid uint64) ([]byte, bool, error)
 	ResolveRecipients([]string) []string
 }
+
+type gpgClient struct {
+	gpgHomeDir string
+}
+
+// gpgv2Client is a gpg2 client
+type gpgv2Client struct {
+	gpgClient
+}
+
+// gpgv1Client is a gpg client
+type gpgv1Client struct {
+	gpgClient
+}
