@@ -1,6 +1,9 @@
 package gscrypt
 
-import "os/exec"
+import (
+	"fmt"
+	"os/exec"
+)
 
 type GPGVersion int
 
@@ -39,5 +42,48 @@ func GuessGPGVersion() GPGVersion {
 		return GPGv1
 	} else {
 		return GPGVersionUndetermined
+	}
+}
+
+func NewGPGClient(gpgVersion, gpgHomeDir string) (GPGClient, error) {
+	v := new(GPGVersion)
+	switch gpgVersion {
+		case "v1":
+			*v = GPGv1
+
+		case "v2":
+			*v = GPGv2
+
+		default:
+			v = nil
+	}
+
+	return newGPGClient(v, gpgHomeDir)
+}
+
+func newGPGClient(version *GPGVersion, homedir string) (GPGClient, error) {
+	var gpgVersion GPGVersion
+	if version != nil {
+		gpgVersion = *version
+	} else {
+		gpgVersion = GuessGPGVersion()
+	}
+
+	switch gpgVersion {
+		case GPGv1:
+			return &gpgv1Client{
+				gpgClient: gpgClient{gpgHomeDir: homedir},
+			}, nil
+
+		case GPGv2:
+			return &gpgv2Client{
+				gpgClient: gpgClient{gpgHomeDir: homedir},
+			}, nil
+
+		case GPGVersionUndetermined:
+			return nil, fmt.Errorf("unable to determine GPG version")
+
+		default:
+			return nil, fmt.Errorf("unhandled case: NewGPGClient")
 	}
 }
