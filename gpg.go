@@ -2,10 +2,16 @@ package gscrypt
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
-	"io/ioutil"
+	"regexp"
+	"strconv"
+	"strings"
+
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
+	"golang.org/x/term"
 )
 
 type GPGVersion int
@@ -136,6 +142,100 @@ func (gc *gpgv2Client) ReadGPGPubRingFile() ([]byte, error) {
 	return runGPGGetOutput(cmd)
 }
 
+func (gc *gpgv2Client) getKeyDetails(option string, keyid uint64) ([]byte, bool, error) {
+	var args []string
+
+	if gc.gpgHomeDir != "" {
+		args = []string{"--homedir", gc.gpgHomeDir}
+	}
+
+	args = append(args, option, fmt.Sprintf("0x%x", keyid))
+
+	cmd := exec.Command("gpg2", args...)
+
+	keydata, err := runGPGGetOutput(cmd)
+	return keydata, err == nil, err
+}
+
+func (gc *gpgv2Client) GetSecretKeyDetails(keyid uint64) ([]byte, bool, error) {
+	return gc.getKeyDetails("-K", keyid)
+}
+
+// GetKeyDetails retrieves the public key details of key with keyid.
+// returns a byte array of the details and a bool if the key exists
+func (gc *gpgv2Client) GetKeyDetails(keyid uint64) ([]byte, bool, error) {
+	return gc.getKeyDetails("-k", keyid)
+}
+
+func (gc *gpgv2Client) ResolveRecipients(recipients []string) []string {
+	return resolveRecipients(gc, recipients)
+}
+
+// GetGPGPrivateKey gets the bytes of a specified keyid, supplying a passphrase
+func (gc *gpgv1Client) GetGPGPrivateKey(keyid uint64, _ string) ([]byte, error) {
+	var args []string
+
+	if gc.gpgHomeDir != "" {
+		args = append(args, []string{"--homedir", gc.gpgHomeDir}...)
+	}
+
+	args = append(args, []string{"--batch", "--export-secret-key", fmt.Sprintf("0x%x", keyid)}...)
+
+	cmd := exec.Command("gpg", args...)
+
+	return runGPGGetOutput(cmd)
+}
+
+// ReadGPGPubRingFile reads the GPG public key ring file
+func (gc *gpgv1Client) ReadGPGPubRingFile() ([]byte, error) {
+	var args []string
+
+	if gc.gpgHomeDir != "" {
+		args = append(args, []string{"--homedir", gc.gpgHomeDir}...)
+	}
+
+	args = append(args, []string{"--batch", "--export"}...)
+
+	cmd := exec.Command("gpg", args...)
+
+	return runGPGGetOutput(cmd)
+}
+
+func (gc *gpgv1Client) getKeyDetails(option string, keyid uint64) ([]byte, bool, error) {
+	var args []string
+
+	if gc.gpgHomeDir != "" {
+		args = []string{"--homedir", gc.gpgHomeDir}
+	}
+
+	args = append(args, option, fmt.Sprintf("0x%x", keyid))
+
+	cmd := exec.Command("gpg", args...)
+
+	keydata, err := runGPGGetOutput(cmd)
+
+	return keydata, err == nil, err
+}
+
+// GetSecretKeyDetails retrieves the secret key details of key with keyid.
+// returns a byte array of the details and a bool if the key exists
+func (gc *gpgv1Client) GetSecretKeyDetails(keyid uint64) ([]byte, bool, error) {
+	return gc.getKeyDetails("-K", keyid)
+}
+
+// GetKeyDetails retrieves the public key details of key with keyid.
+// returns a byte array of the details and a bool if the key exists
+func (gc *gpgv1Client) GetKeyDetails(keyid uint64) ([]byte, bool, error) {
+	return gc.getKeyDetails("-k", keyid)
+}
+
+// ResolveRecipients converts PGP keyids to email addresses, if possible
+func (gc *gpgv1Client) ResolveRecipients(recipients []string) []string {
+	return resolveRecipients(gc, recipients)
+}
+
+// runGPGGetOutput runs the GPG commandline and returns stdout as byte array
+// and any stderr in the error
 func runGPGGetOutput(cmd *exec.Cmd) ([]byte, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -161,27 +261,156 @@ func runGPGGetOutput(cmd *exec.Cmd) ([]byte, error) {
 	return stdoutstr, err2
 }
 
-func (gc *gpgv2Client) getKeyDetails(option string, keyid uint64) ([]byte, bool, error) {
-	var args []string
+// resolveRecipients walks the list of recipients and attempts to convert
+// all keyIds to email addresses; if something goes wrong during the
+// conversion of a recipient, the original string is returned for that
+// recpient
+func resolveRecipients(gc GPGClient, recipients []string) []string {
+	var result []string
 
-	if gc.gpgHomeDir != "" {
-		args = []string{"--homedir", gc.gpgHomeDir}
+	for _, recipient := range recipients {
+		keyID, err := strconv.ParseUint(recipient, 0, 64)
+		if err != nil {
+			result = append(result, recipient)
+		} else {
+			details, found, _ := gc.GetKeyDetails(keyID)
+			if !found {
+				result = append(result, recipient)
+			} else {
+				email := extractEmailFromDetails(details)
+				if email == "" {
+					result = append(result, recipient)
+				} else {
+					result = append(result, email)
+				}
+			}
+		}
 	}
 
-	args = append(args, option, fmt.Sprintf("0x%x", keyid))
-
-	cmd := exec.Command("gpg2", args...)
-
-	keydata, err := runGPGGetOutput(cmd)
-	return keydata, err == nil, err
+	return result
 }
 
-func (gc *gpgv2Client) GetSecretKeyDetails(keyid uint64) ([]byte, bool, error) {
-	return gc.getKeyDetails("-K", keyid)
+var emailPattern = regexp.MustCompile(`uid\s+\[.*\]\s.*\s<(?P<email>.+)>`)
+
+func extractEmailFromDetails(details []byte) string {
+	loc := emailPattern.FindSubmatchIndex(details)
+	if len(loc) == 0 {
+		return ""
+	}
+
+	return string(emailPattern.Expand(nil, []byte("$email"), details, loc))
 }
 
-// GetKeyDetails retrieves the public key details of key with keyid.
-// returns a byte array of the details and a bool if the key exists
-func (gc *gpgv2Client) GetKeyDetails(keyid uint64) ([]byte, bool, error) {
-	return gc.getKeyDetails("-k", keyid)
+// uint64ToStringArray converts an array of uint64's to an array of strings
+// by applying a format string to each uint64
+func uint64ToStringArray(format string, in []uint64) []string {
+	var ret []string
+
+	for _, v := range in {
+		ret = append(ret, fmt.Sprintf(format, v))
+	}
+
+	return ret
+}
+
+// GPGGetPrivateKey walks the list of layerInfos and tries to decrypt the
+// wrapped symmetric keys. For this it determines whether a private key is
+// in the GPGVault or on this system and prompts for the passwords for those
+// that are available. If we do not find a private key on the system for
+// getting to the symmetric key of a layer then an error is generated.
+func GPGGetPrivateKey(descs []ocispec.Descriptor, gpgClient GPGClient, gpgVault GPGVault, mustFindKey bool) (gpgPrivKeys [][]byte, gpgPrivKeysPwds [][]byte, err error) {
+	// PrivateKeyData describes a private key
+	type PrivateKeyData struct {
+		KeyData         []byte
+		KeyDataPassword []byte
+	}
+
+	var pkd PrivateKeyData
+	keyIDPasswordMap := make(map[uint64]PrivateKeyData)
+
+	for _, desc := range descs {
+		for scheme, b64pgpPackets := range GetWrappedKeysMap(desc) {
+			if scheme != "pgp" {
+				continue
+			}
+
+			keywrapper := GetKeyWrapper(scheme)
+			if keywrapper == nil {
+				return nil, nil, errors.Errorf("could not get KeyWrapper for %s\n", scheme)
+			}
+
+			keyIds, err := keywrapper.GetKeyIdsFromPacket(b64pgpPackets)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			found := false
+			for _, keyid := range keyIds {
+				// do we have this key? -- first check the vault
+				if gpgVault != nil {
+					_, keydata := gpgVault.GetGPGPrivateKey(keyid)
+					if len(keydata) > 0 {
+						pkd = PrivateKeyData{
+							KeyData:         keydata,
+							KeyDataPassword: nil, // password not supported in this case
+						}
+
+						keyIDPasswordMap[keyid] = pkd
+						found = true
+						break
+					}
+				} else if gpgClient != nil {
+					// check the local system's gpg installation
+					keyinfo, haveKey, _ := gpgClient.GetSecretKeyDetails(keyid)
+					// this may fail if the key is not here; we ignore the error
+					if !haveKey {
+						// key not on this system
+						continue
+					}
+
+					_, found = keyIDPasswordMap[keyid]
+					if !found {
+						fmt.Printf("Passphrase required for Key id 0x%x: \n%v", keyid, string(keyinfo))
+						fmt.Printf("Enter passphrase for key with Id 0x%x: ", keyid)
+
+						password, err := term.ReadPassword(int(os.Stdin.Fd()))
+						fmt.Printf("\n")
+						if err != nil {
+							return nil, nil, err
+						}
+
+						keydata, err := gpgClient.GetGPGPrivateKey(keyid, string(password))
+						if err != nil {
+							return nil, nil, err
+						}
+
+						pkd = PrivateKeyData{
+							KeyData:         keydata,
+							KeyDataPassword: password,
+						}
+
+						keyIDPasswordMap[keyid] = pkd
+						found = true
+					}
+
+					break
+				} else {
+					return nil, nil, errors.New("no GPGVault or GPGClient passed")
+				}
+			}
+
+			if !found && len(b64pgpPackets) > 0 && mustFindKey {
+				ids := uint64ToStringArray("0x%x", keyIds)
+
+				return nil, nil, errors.Errorf("missing key for decryption of layer %x of %s. Need one of the following keys: %s", desc.Digest, desc.Platform, strings.Join(ids, ", "))
+			}
+		}
+	}
+
+	for _, pkd := range keyIDPasswordMap {
+		gpgPrivKeys = append(gpgPrivKeys, pkd.KeyData)
+		gpgPrivKeysPwds = append(gpgPrivKeysPwds, pkd.KeyDataPassword)
+	}
+
+	return gpgPrivKeys, gpgPrivKeysPwds, nil
 }
